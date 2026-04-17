@@ -4,8 +4,6 @@ import math
 
 def angle_wrap(angle: float) -> float:
     # angle clip to a range limit
-    
-    angle = np.clip(angle,[-np.pi,np.pi])
     return angle
 
 def distance(p1,p2):
@@ -46,21 +44,20 @@ class TargetCourse:
             d[i] = distance([rear_x,rear_y],[x,y])
         
         # Nearest point on the path
-        nearest_distance = 10000
-        nearest_point_ix = 0
-        for i, x, y in enumerate(zip(self.x,self.y)):
-            if distance([rear_x,rear_y],[x,y]) <= nearest_distance:
-                nearest_point_ix = i
+        nearest_point_ix = np.argmin(d)
         
         # Find the first point ahead (starting at nearest) that is at least Lf away
         # from the rear axle position.
         Lf = lookahead_distance
-        lookahead_idx = np.where(d[nearest_point_ix:] >= Lf)[0]
+        lookahead_ix = np.where(d[nearest_point_ix:] >= Lf)[0]
 
         # If no point is far enough, target the last path point
-        Lf = [self.px[-1],self.py[-1]] if lookahead_idx == None
+        if lookahead_ix == None:
+            lookahead_ix = len(self.px)-1
+        else:
+            lookahead_ix = lookahead_ix + nearest_point_ix # nearest point plus start from nearest point search
 
-        return {"target_index":lookahead_idx,"Lf":Lf}
+        return {"target_index":lookahead_ix,"Lf":Lf}
         
 
 
@@ -114,7 +111,7 @@ class PurePursuitNavigator:
         
         # Stop condition: if we are close to the final path point
         if distance(self.path[-1],state[:2]) < self.goal_tolerance:
-            break
+            return np.array([0,0]) # speed, steering angle
 
         # Choose speed
         
@@ -122,23 +119,25 @@ class PurePursuitNavigator:
         # Compute rear axle position
         # let the rear axle as the reference point.
         # approximate rear axle as "vehicle center minus half wheelbase".
-        rear_axle = [state[0]-self.wheelbase/2,state[1]-self.wheelbase/2]
-        
+        rear_axle = [state[0]-0.5*(self.wheelbase)*np.cos(state[2]), state[1]-0.5*self.wheelbase*np.sin(state[2])] # x-axis, y-axis
+
         
         # Pick a target point on the path
-        target = self.course.search_target_index(rear_axle[0],rear_axle[1],self.speed,self.k,self.Lfc)
+        target_ix, Lf = self.course.search_target_index(rear_axle[0],rear_axle[1],self.speed,self.k,self.Lfc)
+        tx, ty = self.course.px[target_ix], self.course.py[target_ix]
         
         # Compute heading error to the target point
         # alpha is the angle between vehicle heading and the line from rear axle to target.
-        vector0 = [target[0] - rear_axle[0], target[1] - rear_axle[1]]
-        alpha = np.arccos(np.dot(vector0,[1,0]),1,1) - state[2]
+        vector = [tx - rear_axle[0], ty - rear_axle[1]]
+        alpha = np.arccos(np.dot(vector,[1,0]),1,1) - state[2]
+        alpha = angle_wrap(alpha)
 
         # Pure Pursuit steering law
         # delta = atan2(2*L*sin(alpha), Lf)
         # L is wheelbase and Lf is lookahead distance.
-        delta = np.arctan2(2 * self.wheelbase * np.sin(alpha), self.Lfc + self.k * self.speed)
+        delta = np.arctan2(2 * self.wheelbase * np.sin(alpha), Lf)
         
-        # --- 7) Limit steering to feasible bounds ---
-        delta = angle_wrap(delta)
+        # Limit steering to feasible bounds
+        delta = np.clip(delta,-self.max_steer,self.max_steer)
 
-        return delta
+        return np.array([self.speed,delta])
